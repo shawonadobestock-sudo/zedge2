@@ -303,7 +303,7 @@ jobs:
           const zedgePassword = process.env.ZEDGE_PASSWORD;
           const isHeadless = process.env.HEADLESS === "true";
 
-          const firebaseDatabaseURL = "https://zedge-automation-3-default-rtdb.asia-southeast1.firebasedatabase.app";
+          const firebaseDatabaseURL = "https://zedge-automation-2-default-rtdb.asia-southeast1.firebasedatabase.app";
           const queuePath = "wallpaperQueue";
 
           if (!proxyServer) throw new Error("Proxy server is required");
@@ -1478,7 +1478,7 @@ jobs:
           HEADLESS: ${{ github.event.inputs.headless }}
           TOTAL_PROFILES: ${{ github.event.inputs.total_profiles }}
           UA_GROUP: ${{ github.event.inputs.ua_group }}
-          FOLDER_NAME: "Zedge 3"
+          FOLDER_NAME: "Zedge 2"
           FB_APIKEY: ${{ secrets.FB_APIKEY }}
         run: node bot.js
 
