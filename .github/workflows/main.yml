@@ -477,27 +477,56 @@ jobs:
 
           async function getNextWallpaperFromRealtimeDB(dayType) {
             console.log(`Checking Firebase Realtime Database queue... (Today's type: ${dayType})`);
+            console.log(`🗄️ Active DB: ${firebaseDatabaseURL}`);
             const data = await firebaseGet(queuePath);
-            if (!data) throw new Error("No items found in Realtime Database");
+            if (!data) throw new Error(`No items found in Realtime Database (${firebaseDatabaseURL})`);
 
-            const entries = Object.entries(data)
-              .filter(([id, item]) => {
-                if (!item || item.status !== "queued") return false;
-                if (!(item.fileBase64 || item.imageBase64)) return false;
+            const allQueued = Object.entries(data).filter(([_, item]) =>
+              item &&
+              item.status === "queued" &&
+              (item.fileBase64 || item.imageBase64)
+            );
+
+            const queuedAudio = allQueued.filter(([_, item]) =>
+              item.isMp3 || (item.name && item.name.toLowerCase().endsWith(".mp3"))
+            );
+            const queuedImage = allQueued.filter(([_, item]) =>
+              !(item.isMp3 || (item.name && item.name.toLowerCase().endsWith(".mp3")))
+            );
+
+            console.log(
+              `📊 Queue composition => total:${allQueued.length} | audio:${queuedAudio.length} | wallpaper:${queuedImage.length} | dayType:${dayType}`
+            );
+
+            const entries = allQueued
+              .filter(([_, item]) => {
                 const itemIsMp3 = item.isMp3 || (item.name && item.name.toLowerCase().endsWith(".mp3"));
                 if (dayType === "AUDIO")     return itemIsMp3;   // 🎵 Ringtone day — MP3 only
                 if (dayType === "WALLPAPER") return !itemIsMp3;  // 🖼️ Wallpaper day — images only
-                return true; // fallback: no type filter
+                return true;
               })
               .sort((a, b) => (a[1].createdAt || 0) - (b[1].createdAt || 0));
 
-            if (!entries.length) throw new Error(`No queued ${dayType} item found — queue may be empty for today's upload type`);
+            if (!entries.length) {
+              const mismatchHint = dayType === "AUDIO"
+                ? `Today is AUDIO but queue has audio:${queuedAudio.length}, wallpaper:${queuedImage.length}`
+                : `Today is WALLPAPER but queue has wallpaper:${queuedImage.length}, audio:${queuedAudio.length}`;
+              throw new Error(`No queued ${dayType} item found. ${mismatchHint}. DB=${firebaseDatabaseURL}`);
+            }
 
             const [id, item] = entries[0];
             const localDir = path.join(process.cwd(), "downloads");
             fs.mkdirSync(localDir, { recursive: true });
-            
+
             const isMp3 = item.isMp3 || (item.name && item.name.toLowerCase().endsWith(".mp3"));
+
+            // Defensive guard (double-check)
+            if ((dayType === "AUDIO" && !isMp3) || (dayType === "WALLPAPER" && isMp3)) {
+              throw new Error(
+                `Day/type mismatch guard triggered. dayType=${dayType}, item=${item.name || id}, isMp3=${isMp3}`
+              );
+            }
+
             const isJpeg = item.name && item.name.toLowerCase().endsWith(".jpeg");
             const ext = isMp3 ? ".mp3" : (isJpeg ? ".jpeg" : ".jpg");
             const localFile = path.join(localDir, `${id}${ext}`);
@@ -611,6 +640,88 @@ jobs:
             await locator.waitFor({ state: "attached" });
             await locator.evaluate(el => {
               el.scrollIntoView({ block: "center", inline: "center" });
+            });
+          }
+
+          // Keep dismissing Zedge privacy/cookie/data-collection popups whenever they appear
+          async function installPrivacyPopupWatcher(page) {
+            await page.addInitScript(() => {
+              // Keep dismissing the Zedge data collection/privacy popup whenever it appears.
+              (() => {
+                if (window.__zedgePrivacyPopupWatcherInstalled) return;
+                window.__zedgePrivacyPopupWatcherInstalled = true;
+
+                const overlaySelectors = [
+                  '[role="dialog"]',
+                  '[role="alertdialog"]',
+                  '[class*="modal"]',
+                  '[class*="overlay"]',
+                  '[class*="consent"]',
+                  '[class*="cookie"]',
+                  '[class*="privacy"]',
+                  '[class*="popup"]',
+                  '[class*="notice"]',
+                  '[id*="modal"]',
+                  '[id*="popup"]',
+                  '[id*="consent"]',
+                  '[id*="cookie"]',
+                  '[id*="privacy"]'
+                ];
+
+                const buttonHints = ['close', 'dismiss', 'got it', 'ok', 'accept'];
+
+                const tryDismiss = () => {
+                  const overlays = [...document.querySelectorAll(overlaySelectors.join(', '))];
+
+                  for (const overlay of overlays) {
+                    const text = (overlay.innerText || '').toLowerCase();
+                    const looksRelevant =
+                      text.includes('data collection') ||
+                      text.includes('privacy policy') ||
+                      text.includes('personal information') ||
+                      text.includes('consent') ||
+                      text.includes('privacy') ||
+                      text.includes('cookie');
+
+                    if (!looksRelevant) continue;
+
+                    const buttons = [...overlay.querySelectorAll('button, [role="button"], a')];
+                    const closeButton = buttons.find(btn => {
+                      const label = `${btn.textContent || ''} ${btn.getAttribute('aria-label') || ''} ${btn.getAttribute('title') || ''}`.toLowerCase();
+                      return buttonHints.some(hint => label.includes(hint));
+                    });
+
+                    if (closeButton) {
+                      closeButton.click();
+                      return true;
+                    }
+                  }
+
+                  return false;
+                };
+
+                const start = () => {
+                  tryDismiss();
+
+                  const observer = new MutationObserver(() => {
+                    tryDismiss();
+                  });
+
+                  observer.observe(document.documentElement, {
+                    subtree: true,
+                    childList: true,
+                    attributes: true
+                  });
+
+                  setInterval(tryDismiss, 500);
+                };
+
+                if (document.documentElement) {
+                  start();
+                } else {
+                  document.addEventListener('DOMContentLoaded', start, { once: true });
+                }
+              })();
             });
           }
 
@@ -1314,6 +1425,9 @@ jobs:
 
               const page = await context.newPage();
 
+              // Install persistent background watcher for Zedge privacy/cookie popups
+              await installPrivacyPopupWatcher(page);
+
               await page.setExtraHTTPHeaders({
                 "Accept-Language": "en-US,en;q=0.9"
               });
@@ -1336,16 +1450,112 @@ jobs:
               console.log(`Page URL before login: ${page.url()}`);
               console.log(`Page title before login: ${await page.title()}`);
 
-              // Handle cookie consent modal (appears for certain proxy regions e.g. US/EU IPs)
-              try {
-                const acceptBtn = page.locator('button:has-text("Accept All Cookies")');
-                await acceptBtn.waitFor({ state: "visible", timeout: 5000 });
-                await acceptBtn.click();
-                console.log("Cookie consent accepted.");
-                await page.waitForTimeout(1500);
-              } catch {
-                console.log("No cookie consent modal — proceeding.");
+              // ── COMPREHENSIVE ONE-TIME PRE-LOGIN MODAL / POPUP KILLER ──────
+              // Runs ONLY on the initial Zedge page load before login.
+              // We check in a loop for up to 8 seconds to handle dynamic/delayed popups,
+              // then exit permanently. This ensures we never interfere with subsequent
+              // upload modals or automation dialogs during the actual run.
+              // ────────────────────────────────────────────────────────────────
+              console.log("Running pre-login modal/popup killer...");
+              let modalDismissed = false;
+              const killerStart = Date.now();
+              const killerMaxWait = 8000; // 8 seconds max wait
+
+              const modalSelectors = [
+                'button:has-text("Close")',
+                'button:has-text("Do not Share or Sell my Personal Information")',
+                'button:has-text("Accept All Cookies")',
+                'button:has-text("Accept All")',
+                'button:has-text("Accept")',
+                'button:has-text("I Agree")',
+                'button:has-text("Agree")',
+                'button:has-text("OK")',
+                'button:has-text("Got it")',
+                'button:has-text("Dismiss")',
+                '[role="dialog"] button:has-text("Close")',
+                '[role="alertdialog"] button:has-text("Close")',
+              ];
+
+              while (Date.now() - killerStart < killerMaxWait) {
+                let clickedAny = false;
+                for (const selector of modalSelectors) {
+                  try {
+                    const btn = page.locator(selector).first();
+                    const visible = await btn.isVisible({ timeout: 200 }).catch(() => false);
+                    if (visible) {
+                      // Check if it's actually part of a privacy/consent overlay
+                      const isConsentOverlay = await btn.evaluate(el => {
+                        const inOverlay = el.closest(
+                          '[class*="modal"], [class*="overlay"], [class*="consent"], ' +
+                          '[class*="cookie"], [class*="privacy"], [class*="popup"], ' +
+                          '[class*="banner"], [class*="notice"], [class*="dialog"], ' +
+                          '[id*="consent"], [id*="cookie"], [id*="privacy"], ' +
+                          '[id*="modal"], [id*="popup"], [role="dialog"], [role="alertdialog"]'
+                        );
+                        return !!inOverlay;
+                      }).catch(() => false);
+
+                      if (isConsentOverlay) {
+                        await btn.click({ timeout: 2000 });
+                        console.log(`✅ Modal dismissed via: ${selector}`);
+                        modalDismissed = true;
+                        clickedAny = true;
+                        break;
+                      }
+                    }
+                  } catch (e) { /* ignore and try next */ }
+                }
+
+                if (clickedAny) {
+                  await page.waitForTimeout(1000);
+                  break; // exit loop if modal was dismissed
+                }
+
+                // Fallback check: look for iframe consent dialogs or overlays and remove them
+                const nuked = await page.evaluate(() => {
+                  let killed = 0;
+                  // Remove any element that looks like a consent/privacy overlay/modal
+                  const elements = document.querySelectorAll(
+                    '[class*="consent"], [class*="cookie"], [class*="privacy"], ' +
+                    '[class*="modal"]:not([data-hook]), [class*="popup"], ' +
+                    '[id*="consent"], [id*="cookie"], [id*="privacy"]'
+                  );
+                  elements.forEach(el => {
+                    // Don't remove Zedge's own upload elements which have data-hook
+                    if (!el.querySelector('[data-hook]') && !el.closest('[data-hook]')) {
+                      el.remove();
+                      killed++;
+                    }
+                  });
+
+                  // Nuke consent iframes
+                  const iframes = document.querySelectorAll(
+                    'iframe[src*="consent"], iframe[src*="cookie"], iframe[src*="privacy"], ' +
+                    'iframe[id*="consent"], iframe[id*="cookie"]'
+                  );
+                  iframes.forEach(iframe => {
+                    iframe.remove();
+                    killed++;
+                  });
+
+                  if (killed > 0) {
+                    document.body.style.overflow = "";
+                    document.documentElement.style.overflow = "";
+                  }
+                  return killed;
+                }).catch(() => 0);
+
+                if (nuked > 0) {
+                  console.log(`✅ Force-removed ${nuked} overlay element(s) via JS`);
+                  modalDismissed = true;
+                  await page.waitForTimeout(1000);
+                  break;
+                }
+
+                await page.waitForTimeout(500);
               }
+
+              console.log(`Pre-login popup killer completed. Dismissed something: ${modalDismissed}`);
 
               await safeClick(
                 page.locator('[data-hook="za-login-email"]').first(),
