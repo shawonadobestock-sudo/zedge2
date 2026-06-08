@@ -663,6 +663,44 @@ jobs:
             await locator.click();
           }
 
+          async function safeClickWithPopupRecovery(page, locator, label, timeout = 30000, retries = 4) {
+            let lastErr = null;
+            for (let attempt = 1; attempt <= retries; attempt++) {
+              try {
+                await dismissConsentPopup(page);
+                await page.waitForTimeout(300);
+                await safeClick(locator, `${label} (attempt ${attempt}/${retries})`, timeout);
+                return;
+              } catch (err) {
+                lastErr = err;
+                console.log(`⚠️ Click failed for ${label} on attempt ${attempt}: ${err.message}`);
+                await dismissConsentPopup(page).catch(() => {});
+                await page.evaluate(() => {
+                  document.body.style.overflow = "";
+                  document.documentElement.style.overflow = "";
+                  const nodes = [...document.querySelectorAll("*")];
+                  let touched = 0;
+                  for (const el of nodes) {
+                    try {
+                      const s = window.getComputedStyle(el);
+                      if ((s.position === "fixed" || s.position === "sticky") &&
+                          parseInt(s.zIndex || "0", 10) >= 999 &&
+                          el.offsetWidth >= window.innerWidth * 0.9 &&
+                          el.offsetHeight >= window.innerHeight * 0.6) {
+                        el.style.pointerEvents = "none";
+                        el.style.display = "none";
+                        touched++;
+                      }
+                    } catch (_) {}
+                  }
+                  return touched;
+                }).catch(() => {});
+                await page.waitForTimeout(700);
+              }
+            }
+            throw new Error(`Failed to click ${label} after ${retries} attempts. Last error: ${lastErr?.message || "unknown"}`);
+          }
+
           async function safeType(locator, value, label) {
             console.log(`Typing ${label}`);
             await locator.waitFor({ state: "visible" });
@@ -708,7 +746,16 @@ jobs:
               "agree to all",
               "accept cookies",
               "i agree",
-              "agree"
+              "agree",
+              "allow all",
+              "allow",
+              "continue",
+              "accept & continue",
+              "got it",
+              "ok",
+              "okay",
+              "proceed",
+              "understand"
             ];
 
             // Hard negative guard: never click these
@@ -1640,10 +1687,12 @@ jobs:
 
               console.log(`Pre-login popup killer completed. Dismissed something: ${modalDismissed}`);
 
-              await safeClick(
+              await safeClickWithPopupRecovery(
+                page,
                 page.locator('[data-hook="za-login-email"]').first(),
                 "Continue with Email",
-                30000
+                30000,
+                5
               );
 
               await safeType(
