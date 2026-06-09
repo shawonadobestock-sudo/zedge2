@@ -1593,83 +1593,81 @@ jobs:
               console.log(`Page URL before login: ${page.url()}`);
               console.log(`Page title before login: ${await page.title()}`);
 
-              // ── DIDOMI / COOKIE CONSENT BLOCKER ───────────────
-              // Strategy: BLOCK & HIDE the modal so it never interrupts automation.
-              // Layer 1 — CSS injection (instant hide before DOM settles)
-              // Layer 2 — JS DOM removal (nuclear remove of overlay elements)
-              // Layer 3 — Click fallback (in case Didomi needs a real click to fire callbacks)
+              // ── DIDOMI / COOKIE CONSENT HANDLER ───────────────
+              // CRITICAL: Zedge's JS hides login buttons until Didomi consent fires.
+              // We MUST click the accept button first to trigger the consent callback,
+              // THEN clean up the overlay. Do NOT remove/hide before clicking.
               // ──────────────────────────────────────────────────────────────
-              console.log("Suppressing Didomi/cookie consent modal...");
+              console.log("Handling Didomi/cookie consent modal...");
               try {
-                // Layer 1: Inject CSS to hide the modal and unblock scrolling instantly
+                // Step 1: Wait a moment for Didomi to fully initialize
+                await page.waitForTimeout(1500);
+
+                // Step 2: Try to click the accept button via Shadow DOM (Didomi uses shadow root)
+                const shadowClicked = await page.evaluate(() => {
+                  const host = document.querySelector('#didomi-host');
+                  if (host && host.shadowRoot) {
+                    const btn = host.shadowRoot.querySelector(
+                      '#didomi-notice-agree-button, .didomi-button-highlight, ' +
+                      'button[aria-label*="Accept"], button[aria-label*="Agree"], ' +
+                      'button.didomi-components-button--color-green'
+                    );
+                    if (btn) { btn.click(); return true; }
+                  }
+                  return false;
+                }).catch(() => false);
+
+                if (shadowClicked) {
+                  console.log('✅ Clicked Didomi accept via Shadow DOM');
+                } else {
+                  // Step 3: Try Playwright locator (works for flat DOM or when Didomi is not shadow-rooted)
+                  const agreeBtn = page.locator('#didomi-notice-agree-button');
+                  const btnVisible = await agreeBtn.isVisible({ timeout: 3000 }).catch(() => false);
+                  if (btnVisible) {
+                    await agreeBtn.click({ timeout: 5000 }).catch(() => {});
+                    console.log('✅ Clicked Didomi accept via Playwright locator');
+                  } else {
+                    // Step 4: Try text-based button search across all frames
+                    for (const frame of page.frames()) {
+                      try {
+                        const acceptBtn = frame.locator('button').filter({ hasText: /accept all cookies/i }).first();
+                        const vis = await acceptBtn.isVisible({ timeout: 1000 }).catch(() => false);
+                        if (vis) {
+                          await acceptBtn.click({ timeout: 3000 }).catch(() => {});
+                          console.log('✅ Clicked Didomi accept via text search in frame');
+                          break;
+                        }
+                      } catch (_) {}
+                    }
+                  }
+                }
+
+                // Step 5: Wait for consent callback to propagate, then clean up overlay
+                await page.waitForTimeout(1500);
+
+                // Step 6: Now safe to hide/remove remaining Didomi overlay
+                await page.evaluate(() => {
+                  ['#didomi-host', '#didomi-popup', '#didomi-notice',
+                   '.didomi-popup-container', '.didomi-notice-banner'].forEach(sel => {
+                    document.querySelectorAll(sel).forEach(el => el.remove());
+                  });
+                  document.body.style.overflow = '';
+                  document.documentElement.style.overflow = '';
+                }).catch(() => {});
+
                 await page.addStyleTag({ content: `
                   #didomi-host, #didomi-popup, #didomi-notice,
                   .didomi-popup-container, .didomi-notice-banner,
-                  [id*="didomi"], [class*="didomi"],
-                  #onetrust-banner-sdk, #onetrust-consent-sdk,
-                  [id*="cookie-consent"], [id*="cookie-banner"],
-                  [class*="cookie-consent"], [class*="cookie-banner"],
-                  [class*="consent-banner"], [class*="privacy-banner"] {
+                  [id*="didomi"], [class*="didomi"] {
                     display: none !important;
-                    visibility: hidden !important;
-                    opacity: 0 !important;
                     pointer-events: none !important;
-                    height: 0 !important;
-                    overflow: hidden !important;
                   }
                   body { overflow: auto !important; }
                 ` }).catch(() => {});
 
-                // Layer 2: JS DOM removal
-                const removedCount = await page.evaluate(() => {
-                  let removed = 0;
-                  const selectors = [
-                    '#didomi-host', '#didomi-popup', '#didomi-notice',
-                    '.didomi-popup-container', '.didomi-notice-banner',
-                    '#onetrust-banner-sdk', '#onetrust-consent-sdk'
-                  ];
-                  selectors.forEach(sel => {
-                    document.querySelectorAll(sel).forEach(el => { el.remove(); removed++; });
-                  });
-                  // Also unblock body scroll
-                  document.body.style.overflow = '';
-                  document.documentElement.style.overflow = '';
-                  return removed;
-                }).catch(() => 0);
-                if (removedCount > 0) console.log(`✅ JS removed ${removedCount} Didomi overlay element(s)`);
-
-                // Layer 3: Try clicking the accept button (needed for Didomi to fire consent callbacks)
-                // Didomi renders inside a shadow root on #didomi-host
-                const clicked = await page.evaluate(() => {
-                  // Try shadow root first
-                  const host = document.querySelector('#didomi-host');
-                  if (host && host.shadowRoot) {
-                    const btn = host.shadowRoot.querySelector(
-                      '#didomi-notice-agree-button, .didomi-button-highlight, button[aria-label*="Accept"], button[aria-label*="Agree"]'
-                    );
-                    if (btn) { btn.click(); return 'shadow-click'; }
-                  }
-                  // Try flat DOM
-                  const flat = document.querySelector(
-                    '#didomi-notice-agree-button, button[aria-label*="Accept All"], button[title*="Accept"]'
-                  );
-                  if (flat) { flat.click(); return 'flat-click'; }
-                  return 'none';
-                }).catch(() => 'error');
-                console.log(`Didomi click attempt: ${clicked}`);
-
-                // Also try Playwright locator as final fallback (handles iframe/shadow edge-cases)
-                const agreeBtn = page.locator('#didomi-notice-agree-button');
-                const isVisible = await agreeBtn.isVisible({ timeout: 2000 }).catch(() => false);
-                if (isVisible) {
-                  await agreeBtn.click({ timeout: 3000 }).catch(() => {});
-                  console.log('✅ Playwright clicked Didomi agree button');
-                }
-
-                await page.waitForTimeout(800);
-                console.log('✅ Didomi consent modal suppressed/dismissed');
+                console.log('✅ Didomi consent handled and overlay cleaned up');
               } catch (err) {
-                console.log(`Didomi suppression note (non-fatal): ${err.message}`);
+                console.log(`Didomi handler note (non-fatal): ${err.message}`);
               }
 
               await safeClickWithPopupRecovery(
