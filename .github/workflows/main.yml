@@ -1603,31 +1603,103 @@ jobs:
                   // Wait longer for modal to fully load
                   await page.waitForTimeout(2000);
                   
-                  // Check multiple Didomi container patterns
+                  // DEBUG: Log what's actually on the page
+                  console.log("🔍 DEBUG: Scanning page for modal elements...");
+                  await page.evaluate(() => {
+                    const allElements = document.querySelectorAll('div, section, aside, [role="dialog"], .modal, .popup');
+                    let foundElements = [];
+                    allElements.forEach(el => {
+                      const style = window.getComputedStyle(el);
+                      const isVisible = style.display !== 'none' && style.visibility !== 'hidden' && el.offsetWidth > 0 && el.offsetHeight > 0;
+                      if (isVisible) {
+                        const text = el.textContent?.substring(0, 100)?.toLowerCase() || '';
+                        const className = el.className || '';
+                        const id = el.id || '';
+                        if (text.includes('privacy') || text.includes('cookie') || text.includes('share') || 
+                            text.includes('personal') || text.includes('close') || text.includes('accept') ||
+                            className.includes('modal') || className.includes('popup') || className.includes('didomi') ||
+                            id.includes('modal') || id.includes('popup') || id.includes('didomi')) {
+                          foundElements.push({
+                            tag: el.tagName,
+                            id: id,
+                            className: className,
+                            text: text,
+                            position: style.position,
+                            zIndex: style.zIndex
+                          });
+                        }
+                      }
+                    });
+                    if (foundElements.length > 0) {
+                      console.log('🔍 Found potential modal elements:', JSON.stringify(foundElements, null, 2));
+                    } else {
+                      console.log('🔍 No modal-like elements detected');
+                    }
+                  });
+                  
+                  // Check multiple Didomi and privacy modal container patterns
                   const didomiSelectors = [
                     '#didomi-host',
-                    '#didomi-notice',
+                    '#didomi-notice', 
                     '.didomi-notice',
                     '[data-didomi-host]',
-                    'iframe[src*="didomi"]'
+                    'iframe[src*="didomi"]',
+                    // Generic privacy modal selectors
+                    '[class*="privacy"]',
+                    '[class*="consent"]',
+                    '[class*="cookie"]',
+                    '[id*="privacy"]',
+                    '[id*="consent"]',
+                    '[id*="cookie"]',
+                    // Look for modals containing specific text
+                    ':has-text("Do not Share or Sell")',
+                    ':has-text("Privacy Policy")',
+                    ':has-text("cookies")',
+                    ':has-text("personal data")',
+                    // Generic modal selectors
+                    '.modal:visible',
+                    '[role="dialog"]:visible',
+                    '.popup:visible'
                   ];
                   
                   let modalFound = false;
                   let modalContainer = null;
                   
                   for (const selector of didomiSelectors) {
-                    const element = page.locator(selector).first();
-                    const isVisible = await element.isVisible().catch(() => false);
-                    if (isVisible) {
-                      modalContainer = element;
-                      modalFound = true;
-                      console.log(`✅ Didomi modal found with selector: ${selector}`);
-                      break;
+                    try {
+                      const element = page.locator(selector).first();
+                      const isVisible = await element.isVisible().catch(() => false);
+                      if (isVisible) {
+                        modalContainer = element;
+                        modalFound = true;
+                        console.log(`✅ Privacy/Didomi modal found with selector: ${selector}`);
+                        break;
+                      }
+                    } catch (e) {
+                      continue;
+                    }
+                  }
+                  
+                  // Additional check: Look for any visible elements containing privacy-related text
+                  if (!modalFound) {
+                    try {
+                      const privacyElements = await page.$$(':has-text("Do not Share"), :has-text("Close"), :has-text("Privacy Policy"), :has-text("cookies"), :has-text("personal information")');
+                      for (const el of privacyElements) {
+                        const isVisible = await el.isVisible().catch(() => false);
+                        if (isVisible) {
+                          modalContainer = page.locator('body');
+                          modalFound = true;
+                          console.log(`✅ Privacy modal detected by text content`);
+                          break;
+                        }
+                      }
+                    } catch (e) {
+                      console.log(`Debug: Text search error: ${e.message}`);
                     }
                   }
                   
                   if (!modalFound) {
-                    console.log("ℹ️ No Didomi modal detected - continuing...");
+                    console.log("ℹ️ No privacy/Didomi modal detected - continuing...");
                     return true;
                   }
                   
@@ -1642,7 +1714,7 @@ jobs:
                     }
                   }
                   
-                  // Multiple button selector patterns for different Didomi configs
+                  // Multiple button selector patterns for different Didomi configs and generic privacy modals
                   const buttonSelectors = [
                     // Standard Didomi buttons
                     '#didomi-notice-agree-button',
@@ -1652,16 +1724,32 @@ jobs:
                     '[data-didomi="continue"]',
                     '[data-didomi="agree"]',
                     '[data-didomi="accept"]',
-                    // Text-based selectors
+                    // Text-based selectors for common privacy modal buttons
+                    'button:has-text("Close")',
                     'button:has-text("Accept")',
                     'button:has-text("Continue")', 
                     'button:has-text("OK")',
                     'button:has-text("Got it")',
                     'button:has-text("Agree")',
+                    'button:has-text("I Understand")',
+                    'button:has-text("Dismiss")',
+                    // Specific to privacy modals like the one in screenshot
+                    'button:has-text("Do not Share or Sell my Personal Information")',
+                    'input[value*="Close"]',
+                    'input[value*="Accept"]',
+                    'input[value*="Continue"]',
                     // Class-based selectors
                     '.didomi-continue-without-agreeing',
                     '.didomi-notice-continue',
-                    '.consent-accept-all'
+                    '.consent-accept-all',
+                    '.privacy-close',
+                    '.modal-close',
+                    '.popup-close',
+                    // Generic close buttons
+                    '[aria-label*="close"]',
+                    '[aria-label*="Close"]',
+                    '[title*="close"]',
+                    '[title*="Close"]'
                   ];
                   
                   let clicked = false;
@@ -1688,17 +1776,49 @@ jobs:
                   if (!clicked) {
                     console.log("🔧 Attempting force removal of modal elements...");
                     await page.evaluate(() => {
-                      // Remove all potential Didomi elements
+                      // Remove all potential privacy/Didomi elements
                       const selectors = [
+                        // Didomi specific
                         '#didomi-host', '#didomi-notice', '.didomi-notice', 
-                        '[data-didomi-host]', '.didomi-popup', '.didomi-screen'
+                        '[data-didomi-host]', '.didomi-popup', '.didomi-screen',
+                        // Generic privacy and consent modals
+                        '[class*="privacy"]', '[class*="consent"]', '[class*="cookie"]',
+                        '[id*="privacy"]', '[id*="consent"]', '[id*="cookie"]',
+                        '.modal', '.popup', '[role="dialog"]',
+                        // Look for elements with specific text content
+                        '*:contains("Do not Share")', '*:contains("Privacy Policy")',
+                        '*:contains("cookies")', '*:contains("personal information")'
                       ];
                       
                       selectors.forEach(sel => {
-                        document.querySelectorAll(sel).forEach(el => {
-                          el.style.display = 'none';
-                          el.remove();
-                        });
+                        try {
+                          document.querySelectorAll(sel).forEach(el => {
+                            if (el && el.style) {
+                              el.style.display = 'none';
+                              el.remove();
+                            }
+                          });
+                        } catch (e) {
+                          // Continue if selector fails
+                        }
+                      });
+                      
+                      // Additional cleanup: remove any overlay-style elements
+                      const overlays = document.querySelectorAll('div, section, aside');
+                      overlays.forEach(el => {
+                        const style = window.getComputedStyle(el);
+                        if (style.position === 'fixed' || style.position === 'absolute') {
+                          const zIndex = parseInt(style.zIndex || '0');
+                          if (zIndex > 100 && el.offsetWidth > window.innerWidth * 0.5 && el.offsetHeight > window.innerHeight * 0.3) {
+                            const textContent = el.textContent?.toLowerCase() || '';
+                            if (textContent.includes('privacy') || textContent.includes('cookie') || 
+                                textContent.includes('personal') || textContent.includes('share') ||
+                                textContent.includes('information')) {
+                              el.style.display = 'none';
+                              el.remove();
+                            }
+                          }
+                        }
                       });
                       
                       // Restore body overflow
@@ -1706,7 +1826,7 @@ jobs:
                       document.documentElement.style.overflow = '';
                     });
                     
-                    console.log("⚡ Force-removed Didomi modal elements");
+                    console.log("⚡ Force-removed privacy/Didomi modal elements");
                   }
                   
                   // Verify modal is dismissed
