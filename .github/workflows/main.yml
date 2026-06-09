@@ -824,20 +824,20 @@ jobs:
                       '.didomi-popup',
                       '[id*="didomi"]',
                       '[class*="didomi"]',
-                      'dialog:not([data-hook])',
-                      '[role="dialog"]:not([data-hook])',
-                      '[class*="consent"]:not([data-hook])',
-                      '[class*="cookie"]:not([data-hook])',
-                      '[class*="privacy"]:not([data-hook])',
-                      '[class*="modal"]:not([data-hook])',
-                      '[class*="popup"]:not([data-hook])',
-                      '[class*="dialog"]:not([data-hook])',
-                      '[class*="overlay"]:not([data-hook])',
-                      '[class*="backdrop"]:not([data-hook])',
-                      '[class*="banner"]:not([data-hook])',
-                      '[class*="notification"]:not([data-hook])',
-                      '[class*="alert"]:not([data-hook])',
-                      '[class*="announcement"]:not([data-hook])',
+                      'dialog',
+                      '[role="dialog"]',
+                      '[class*="consent"]',
+                      '[class*="cookie"]',
+                      '[class*="privacy"]',
+                      '[class*="modal"]',
+                      '[class*="popup"]',
+                      '[class*="dialog"]',
+                      '[class*="overlay"]',
+                      '[class*="backdrop"]',
+                      '[class*="banner"]',
+                      '[class*="notification"]',
+                      '[class*="alert"]',
+                      '[class*="announcement"]',
                       '[id*="consent"]',
                       '[id*="cookie"]',
                       '[id*="privacy"]',
@@ -849,10 +849,49 @@ jobs:
                       '[id*="banner"]'
                     ];
 
+                    function isProtected(el) {
+                      if (!el) return false;
+                      if (el.querySelector("[data-hook]") || el.closest("[data-hook]")) return true;
+                      
+                      let current = el;
+                      while (current) {
+                        if (current.tagName === 'DIALOG' || 
+                            current.getAttribute('role') === 'dialog' || 
+                            current.classList.contains('sc-gKXOVf') ||
+                            current.classList.contains('dwmyJL')) {
+                          
+                          if (current.id === 'didomi-host') return false;
+                          
+                          const text = (current.innerText || current.textContent || "").toLowerCase();
+                          const uploadKeywords = [
+                            "upload",
+                            "wallpaper",
+                            "ringtone",
+                            "edit meta",
+                            "publish",
+                            "content policy",
+                            "ownership",
+                            "title",
+                            "tags",
+                            "category",
+                            "description",
+                            "success",
+                            "pending",
+                            "published"
+                          ];
+                          if (uploadKeywords.some(kw => text.includes(kw))) {
+                            return true;
+                          }
+                        }
+                        current = current.parentElement;
+                      }
+                      return false;
+                    }
+
                     selectors.forEach(sel => {
                       const els = root.querySelectorAll(sel);
                       els.forEach(el => {
-                        if (!el.querySelector("[data-hook]") && !el.closest("[data-hook]")) {
+                        if (!isProtected(el)) {
                           el.remove();
                           k++;
                         }
@@ -1605,20 +1644,20 @@ jobs:
                         '.didomi-popup',
                         '[id*="didomi"]',
                         '[class*="didomi"]',
-                        'dialog:not([data-hook])',
-                        '[role="dialog"]:not([data-hook])',
-                        '[class*="consent"]:not([data-hook])',
-                        '[class*="cookie"]:not([data-hook])',
-                        '[class*="privacy"]:not([data-hook])',
-                        '[class*="modal"]:not([data-hook])',
-                        '[class*="popup"]:not([data-hook])',
-                        '[class*="dialog"]:not([data-hook])',
-                        '[class*="overlay"]:not([data-hook])',
-                        '[class*="backdrop"]:not([data-hook])',
-                        '[class*="banner"]:not([data-hook])',
-                        '[class*="notification"]:not([data-hook])',
-                        '[class*="alert"]:not([data-hook])',
-                        '[class*="announcement"]:not([data-hook])',
+                        'dialog',
+                        '[role="dialog"]',
+                        '[class*="consent"]',
+                        '[class*="cookie"]',
+                        '[class*="privacy"]',
+                        '[class*="modal"]',
+                        '[class*="popup"]',
+                        '[class*="dialog"]',
+                        '[class*="overlay"]',
+                        '[class*="backdrop"]',
+                        '[class*="banner"]',
+                        '[class*="notification"]',
+                        '[class*="alert"]',
+                        '[class*="announcement"]',
                         '[id*="consent"]',
                         '[id*="cookie"]',
                         '[id*="privacy"]',
@@ -1630,6 +1669,45 @@ jobs:
                         '[id*="banner"]'
                       ];
 
+                      function isProtected(el) {
+                        if (!el) return false;
+                        if (el.querySelector("[data-hook]") || el.closest("[data-hook]")) return true;
+                        
+                        let current = el;
+                        while (current) {
+                          if (current.tagName === 'DIALOG' || 
+                              current.getAttribute('role') === 'dialog' || 
+                              current.classList.contains('sc-gKXOVf') ||
+                              current.classList.contains('dwmyJL')) {
+                            
+                            if (current.id === 'didomi-host') return false;
+                            
+                            const text = (current.innerText || current.textContent || "").toLowerCase();
+                            const uploadKeywords = [
+                              "upload",
+                              "wallpaper",
+                              "ringtone",
+                              "edit meta",
+                              "publish",
+                              "content policy",
+                              "ownership",
+                              "title",
+                              "tags",
+                              "category",
+                              "description",
+                              "success",
+                              "pending",
+                              "published"
+                            ];
+                            if (uploadKeywords.some(kw => text.includes(kw))) {
+                              return true;
+                            }
+                          }
+                          current = current.parentElement;
+                        }
+                        return false;
+                      }
+
                       let killed = 0;
 
                       function checkAndNuke(root) {
@@ -1637,7 +1715,7 @@ jobs:
                         selectors.forEach(sel => {
                           const els = root.querySelectorAll(sel);
                           els.forEach(el => {
-                            if (!el.querySelector("[data-hook]") && !el.closest("[data-hook]")) {
+                            if (!isProtected(el)) {
                               el.remove();
                               killed++;
                             }
