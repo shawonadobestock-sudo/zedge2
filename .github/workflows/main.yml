@@ -663,6 +663,44 @@ jobs:
             await locator.click();
           }
 
+          async function safeClickWithPopupRecovery(page, locator, label, timeout = 30000, retries = 4) {
+            let lastErr = null;
+            for (let attempt = 1; attempt <= retries; attempt++) {
+              try {
+                await dismissConsentPopup(page);
+                await page.waitForTimeout(300);
+                await safeClick(locator, `${label} (attempt ${attempt}/${retries})`, timeout);
+                return;
+              } catch (err) {
+                lastErr = err;
+                console.log(`⚠️ Click failed for ${label} on attempt ${attempt}: ${err.message}`);
+                await dismissConsentPopup(page).catch(() => {});
+                await page.evaluate(() => {
+                  document.body.style.overflow = "";
+                  document.documentElement.style.overflow = "";
+                  const nodes = [...document.querySelectorAll("*")];
+                  let touched = 0;
+                  for (const el of nodes) {
+                    try {
+                      const s = window.getComputedStyle(el);
+                      if ((s.position === "fixed" || s.position === "sticky") &&
+                          parseInt(s.zIndex || "0", 10) >= 999 &&
+                          el.offsetWidth >= window.innerWidth * 0.9 &&
+                          el.offsetHeight >= window.innerHeight * 0.6) {
+                        el.style.pointerEvents = "none";
+                        el.style.display = "none";
+                        touched++;
+                      }
+                    } catch (_) {}
+                  }
+                  return touched;
+                }).catch(() => {});
+                await page.waitForTimeout(700);
+              }
+            }
+            throw new Error(`Failed to click ${label} after ${retries} attempts. Last error: ${lastErr?.message || "unknown"}`);
+          }
+
           async function safeType(locator, value, label) {
             console.log(`Typing ${label}`);
             await locator.waitFor({ state: "visible" });
@@ -698,27 +736,126 @@ jobs:
           }
 
           async function dismissConsentPopup(page) {
-            // Simple consent popup dismissal - minimal intervention
-            console.log("Checking for basic consent popups...");
+            console.log("Checking for consent/cookie popups in all frames...");
             let clickedAny = false;
 
-            try {
-              const buttons = await page.$$("button, [role='button'], a");
-              for (const btn of buttons) {
-                try {
-                  if (!(await btn.isVisible())) continue;
-                  const text = (await btn.innerText().catch(() => "")).trim().toLowerCase();
-                  
-                  // Only click very obvious accept buttons
-                  if (text === "ok" || text === "accept" || text === "continue") {
-                    await btn.click().catch(() => {});
+                      // Strict priority: always prefer positive consent buttons
+            const acceptPriority = [
+              "accept all cookies",
+              "accept all",
+              "agree to all",
+              "accept cookies",
+              "i agree",
+              "agree",
+              "allow all",
+              "allow",
+              "continue",
+              "accept & continue",
+              "got it",
+              "ok",
+              "okay",
+              "proceed",
+              "understand"
+            ];
+
+            // Hard negative guard: never click these
+            const negativeWords = ["reject", "disagree", "decline", "optional", "deny"];
+
+            for (const frame of page.frames()) {
+              try {
+                const buttons = await frame.$$("button, [role='button'], a");
+
+                // Collect visible candidates first
+                const candidates = [];
+                for (const btn of buttons) {
+                  try {
+                    if (!(await btn.isVisible())) continue;
+                    const text = (await btn.innerText().catch(() => "")).trim().toLowerCase();
+                    const ariaLabel = (await btn.getAttribute("aria-label").catch(() => "") || "").toLowerCase();
+                    const title = (await btn.getAttribute("title").catch(() => "") || "").toLowerCase();
+                    const id = (await btn.getAttribute("id").catch(() => "") || "").toLowerCase();
+                    const className = (await btn.getAttribute("class").catch(() => "") || "").toLowerCase();
+                    const combined = `${text} ${ariaLabel} ${title} ${id} ${className}`.trim();
+
+                    if (!combined) continue;
+                    if (negativeWords.some(w => combined.includes(w))) continue;
+
+                    candidates.push({ btn, text, ariaLabel, title, combined });
+                  } catch (_) {}
+                }
+
+                // Pass 1: strict priority phrase match
+                let clickedInFrame = false;
+                for (const phrase of acceptPriority) {
+                  const match = candidates.find(c =>
+                    c.text === phrase ||
+                    c.ariaLabel === phrase ||
+                    c.title === phrase ||
+                    c.combined.includes(phrase)
+                  );
+                  if (match) {
+                    console.log(`✅ Clicked consent accept element: "${match.text || match.ariaLabel || match.title}" in frame: ${frame.url()}`);
+                    await match.btn.click().catch(() => {});
                     clickedAny = true;
+                    clickedInFrame = true;
                     await page.waitForTimeout(500);
                     break;
                   }
-                } catch (_) {}
-              }
-            } catch (_) {}
+                }
+
+                // Pass 2 (fallback): generic positive consent wording only
+                if (!clickedInFrame) {
+                  const generic = candidates.find(c =>
+                    c.combined.includes("accept") || c.combined.includes("agree")
+                  );
+                  if (generic) {
+                    console.log(`✅ Clicked generic consent accept: "${generic.text || generic.ariaLabel || generic.title}" in frame: ${frame.url()}`);
+                    await generic.btn.click().catch(() => {});
+                    clickedAny = true;
+                    await page.waitForTimeout(500);
+                  }
+                }
+              } catch (_) {}
+            }
+
+            // Fallback close/remove only if no accept click happened
+            if (!clickedAny) {
+              try {
+                const nuked = await page.evaluate(() => {
+                  let killed = 0;
+                  const elements = document.querySelectorAll(
+                    '[class*="consent"], [class*="cookie"], [class*="privacy"], ' +
+                    '[class*="modal"]:not([data-hook]), [class*="popup"], ' +
+                    '[id*="consent"], [id*="cookie"], [id*="privacy"]'
+                  );
+                  elements.forEach(el => {
+                    if (!el.querySelector("[data-hook]") && !el.closest("[data-hook]")) {
+                      el.remove();
+                      killed++;
+                    }
+                  });
+
+                  const iframes = document.querySelectorAll(
+                    'iframe[src*="consent"], iframe[src*="cookie"], iframe[src*="privacy"], ' +
+                    'iframe[id*="consent"], iframe[id*="cookie"]'
+                  );
+                  iframes.forEach(iframe => {
+                    iframe.remove();
+                    killed++;
+                  });
+
+                  if (killed > 0) {
+                    document.body.style.overflow = "";
+                    document.documentElement.style.overflow = "";
+                  }
+                  return killed;
+                });
+                if (nuked > 0) {
+                  console.log(`✅ JS removed ${nuked} blocking elements.`);
+                  clickedAny = true;
+                }
+              } catch (_) {}
+            }
 
             return clickedAny;
           }
@@ -1456,11 +1593,91 @@ jobs:
               console.log(`Page URL before login: ${page.url()}`);
               console.log(`Page title before login: ${await page.title()}`);
 
-              // Proceed with login (removed all Didomi/cookie popup handling)
-              await safeClick(
+              // ── DIDOMI / COOKIE CONSENT BLOCKER ───────────────
+              // Strategy: BLOCK & HIDE the modal so it never interrupts automation.
+              // Layer 1 — CSS injection (instant hide before DOM settles)
+              // Layer 2 — JS DOM removal (nuclear remove of overlay elements)
+              // Layer 3 — Click fallback (in case Didomi needs a real click to fire callbacks)
+              // ──────────────────────────────────────────────────────────────
+              console.log("Suppressing Didomi/cookie consent modal...");
+              try {
+                // Layer 1: Inject CSS to hide the modal and unblock scrolling instantly
+                await page.addStyleTag({ content: `
+                  #didomi-host, #didomi-popup, #didomi-notice,
+                  .didomi-popup-container, .didomi-notice-banner,
+                  [id*="didomi"], [class*="didomi"],
+                  #onetrust-banner-sdk, #onetrust-consent-sdk,
+                  [id*="cookie-consent"], [id*="cookie-banner"],
+                  [class*="cookie-consent"], [class*="cookie-banner"],
+                  [class*="consent-banner"], [class*="privacy-banner"] {
+                    display: none !important;
+                    visibility: hidden !important;
+                    opacity: 0 !important;
+                    pointer-events: none !important;
+                    height: 0 !important;
+                    overflow: hidden !important;
+                  }
+                  body { overflow: auto !important; }
+                ` }).catch(() => {});
+
+                // Layer 2: JS DOM removal
+                const removedCount = await page.evaluate(() => {
+                  let removed = 0;
+                  const selectors = [
+                    '#didomi-host', '#didomi-popup', '#didomi-notice',
+                    '.didomi-popup-container', '.didomi-notice-banner',
+                    '#onetrust-banner-sdk', '#onetrust-consent-sdk'
+                  ];
+                  selectors.forEach(sel => {
+                    document.querySelectorAll(sel).forEach(el => { el.remove(); removed++; });
+                  });
+                  // Also unblock body scroll
+                  document.body.style.overflow = '';
+                  document.documentElement.style.overflow = '';
+                  return removed;
+                }).catch(() => 0);
+                if (removedCount > 0) console.log(`✅ JS removed ${removedCount} Didomi overlay element(s)`);
+
+                // Layer 3: Try clicking the accept button (needed for Didomi to fire consent callbacks)
+                // Didomi renders inside a shadow root on #didomi-host
+                const clicked = await page.evaluate(() => {
+                  // Try shadow root first
+                  const host = document.querySelector('#didomi-host');
+                  if (host && host.shadowRoot) {
+                    const btn = host.shadowRoot.querySelector(
+                      '#didomi-notice-agree-button, .didomi-button-highlight, button[aria-label*="Accept"], button[aria-label*="Agree"]'
+                    );
+                    if (btn) { btn.click(); return 'shadow-click'; }
+                  }
+                  // Try flat DOM
+                  const flat = document.querySelector(
+                    '#didomi-notice-agree-button, button[aria-label*="Accept All"], button[title*="Accept"]'
+                  );
+                  if (flat) { flat.click(); return 'flat-click'; }
+                  return 'none';
+                }).catch(() => 'error');
+                console.log(`Didomi click attempt: ${clicked}`);
+
+                // Also try Playwright locator as final fallback (handles iframe/shadow edge-cases)
+                const agreeBtn = page.locator('#didomi-notice-agree-button');
+                const isVisible = await agreeBtn.isVisible({ timeout: 2000 }).catch(() => false);
+                if (isVisible) {
+                  await agreeBtn.click({ timeout: 3000 }).catch(() => {});
+                  console.log('✅ Playwright clicked Didomi agree button');
+                }
+
+                await page.waitForTimeout(800);
+                console.log('✅ Didomi consent modal suppressed/dismissed');
+              } catch (err) {
+                console.log(`Didomi suppression note (non-fatal): ${err.message}`);
+              }
+
+              await safeClickWithPopupRecovery(
+                page,
                 page.locator('[data-hook="za-login-email"]').first(),
                 "Continue with Email",
-                30000
+                30000,
+                5
               );
 
               await safeType(
