@@ -739,23 +739,14 @@ jobs:
             console.log("Checking for consent/cookie popups in all frames...");
             let clickedAny = false;
 
-                      // Strict priority: always prefer positive consent buttons
+            // Strict priority: always prefer positive consent buttons
             const acceptPriority = [
               "accept all cookies",
               "accept all",
               "agree to all",
               "accept cookies",
               "i agree",
-              "agree",
-              "allow all",
-              "allow",
-              "continue",
-              "accept & continue",
-              "got it",
-              "ok",
-              "okay",
-              "proceed",
-              "understand"
+              "agree"
             ];
 
             // Hard negative guard: never click these
@@ -823,17 +814,63 @@ jobs:
               try {
                 const nuked = await page.evaluate(() => {
                   let killed = 0;
-                  const elements = document.querySelectorAll(
-                    '[class*="consent"], [class*="cookie"], [class*="privacy"], ' +
-                    '[class*="modal"]:not([data-hook]), [class*="popup"], ' +
-                    '[id*="consent"], [id*="cookie"], [id*="privacy"]'
-                  );
-                  elements.forEach(el => {
-                    if (!el.querySelector("[data-hook]") && !el.closest("[data-hook]")) {
-                      el.remove();
-                      killed++;
-                    }
-                  });
+
+                  function nukeElements(root) {
+                    let k = 0;
+                    if (!root) return k;
+
+                    const selectors = [
+                      '#didomi-host',
+                      '.didomi-popup',
+                      '[id*="didomi"]',
+                      '[class*="didomi"]',
+                      'dialog:not([data-hook])',
+                      '[role="dialog"]:not([data-hook])',
+                      '[class*="consent"]:not([data-hook])',
+                      '[class*="cookie"]:not([data-hook])',
+                      '[class*="privacy"]:not([data-hook])',
+                      '[class*="modal"]:not([data-hook])',
+                      '[class*="popup"]:not([data-hook])',
+                      '[class*="dialog"]:not([data-hook])',
+                      '[class*="overlay"]:not([data-hook])',
+                      '[class*="backdrop"]:not([data-hook])',
+                      '[class*="banner"]:not([data-hook])',
+                      '[class*="notification"]:not([data-hook])',
+                      '[class*="alert"]:not([data-hook])',
+                      '[class*="announcement"]:not([data-hook])',
+                      '[id*="consent"]',
+                      '[id*="cookie"]',
+                      '[id*="privacy"]',
+                      '[id*="modal"]',
+                      '[id*="popup"]',
+                      '[id*="dialog"]',
+                      '[id*="overlay"]',
+                      '[id*="backdrop"]',
+                      '[id*="banner"]'
+                    ];
+
+                    selectors.forEach(sel => {
+                      const els = root.querySelectorAll(sel);
+                      els.forEach(el => {
+                        if (!el.querySelector("[data-hook]") && !el.closest("[data-hook]")) {
+                          el.remove();
+                          k++;
+                        }
+                      });
+                    });
+
+                    // Traverse shadow roots recursively
+                    const allEls = root.querySelectorAll('*');
+                    allEls.forEach(el => {
+                      if (el.shadowRoot) {
+                        k += nukeElements(el.shadowRoot);
+                      }
+                    });
+
+                    return k;
+                  }
+
+                  killed += nukeElements(document);
 
                   const iframes = document.querySelectorAll(
                     'iframe[src*="consent"], iframe[src*="cookie"], iframe[src*="privacy"], ' +
@@ -844,9 +881,11 @@ jobs:
                     killed++;
                   });
 
-                  if (killed > 0) {
-                    document.body.style.overflow = "";
-                    document.documentElement.style.overflow = "";
+                  if (killed > 0 || document.getElementById('didomi-host')) {
+                    document.body.style.setProperty("overflow", "auto", "important");
+                    document.documentElement.style.setProperty("overflow", "auto", "important");
+                    document.body.style.setProperty("pointer-events", "auto", "important");
+                    document.documentElement.style.setProperty("pointer-events", "auto", "important");
                   }
                   return killed;
                 });
@@ -1556,6 +1595,83 @@ jobs:
                     }
                   };
                 }
+
+                // Background Modal/Popup Observer
+                try {
+                  const observer = new MutationObserver(() => {
+                    try {
+                      const selectors = [
+                        '#didomi-host',
+                        '.didomi-popup',
+                        '[id*="didomi"]',
+                        '[class*="didomi"]',
+                        'dialog:not([data-hook])',
+                        '[role="dialog"]:not([data-hook])',
+                        '[class*="consent"]:not([data-hook])',
+                        '[class*="cookie"]:not([data-hook])',
+                        '[class*="privacy"]:not([data-hook])',
+                        '[class*="modal"]:not([data-hook])',
+                        '[class*="popup"]:not([data-hook])',
+                        '[class*="dialog"]:not([data-hook])',
+                        '[class*="overlay"]:not([data-hook])',
+                        '[class*="backdrop"]:not([data-hook])',
+                        '[class*="banner"]:not([data-hook])',
+                        '[class*="notification"]:not([data-hook])',
+                        '[class*="alert"]:not([data-hook])',
+                        '[class*="announcement"]:not([data-hook])',
+                        '[id*="consent"]',
+                        '[id*="cookie"]',
+                        '[id*="privacy"]',
+                        '[id*="modal"]',
+                        '[id*="popup"]',
+                        '[id*="dialog"]',
+                        '[id*="overlay"]',
+                        '[id*="backdrop"]',
+                        '[id*="banner"]'
+                      ];
+
+                      let killed = 0;
+
+                      function checkAndNuke(root) {
+                        if (!root) return;
+                        selectors.forEach(sel => {
+                          const els = root.querySelectorAll(sel);
+                          els.forEach(el => {
+                            if (!el.querySelector("[data-hook]") && !el.closest("[data-hook]")) {
+                              el.remove();
+                              killed++;
+                            }
+                          });
+                        });
+
+                        // Traverse shadow DOMs recursively
+                        const allEls = root.querySelectorAll('*');
+                        allEls.forEach(el => {
+                          if (el.shadowRoot) {
+                            checkAndNuke(el.shadowRoot);
+                          }
+                        });
+                      }
+
+                      checkAndNuke(document);
+
+                      if (killed > 0 || document.getElementById('didomi-host')) {
+                        document.body.style.setProperty("overflow", "auto", "important");
+                        document.documentElement.style.setProperty("overflow", "auto", "important");
+                        document.body.style.setProperty("pointer-events", "auto", "important");
+                        document.documentElement.style.setProperty("pointer-events", "auto", "important");
+                      }
+                    } catch (_) {}
+                  });
+
+                  if (document.documentElement) {
+                    observer.observe(document.documentElement, { childList: true, subtree: true });
+                  } else {
+                    document.addEventListener("DOMContentLoaded", () => {
+                      observer.observe(document.documentElement, { childList: true, subtree: true });
+                    });
+                  }
+                } catch (_) {}
               }, {
                 hc:       fpHC,
                 dm:       fpDM,
@@ -1593,81 +1709,59 @@ jobs:
               console.log(`Page URL before login: ${page.url()}`);
               console.log(`Page title before login: ${await page.title()}`);
 
-              // ── DIDOMI / COOKIE CONSENT HANDLER ───────────────
-              // CRITICAL: Zedge's JS hides login buttons until Didomi consent fires.
-              // We MUST click the accept button first to trigger the consent callback,
-              // THEN clean up the overlay. Do NOT remove/hide before clicking.
+              // ── DIDOMI CONSENT POPUP HANDLER ──────────────────
+              // Handles the Didomi cookie consent modal by clicking Accept/Close button
+              // This ensures proper consent is registered with the website
               // ──────────────────────────────────────────────────────────────
-              console.log("Handling Didomi/cookie consent modal...");
+              console.log("Checking for Didomi cookie consent modal...");
+              
               try {
-                // Step 1: Wait a moment for Didomi to fully initialize
-                await page.waitForTimeout(1500);
-
-                // Step 2: Try to click the accept button via Shadow DOM (Didomi uses shadow root)
-                const shadowClicked = await page.evaluate(() => {
-                  const host = document.querySelector('#didomi-host');
-                  if (host && host.shadowRoot) {
-                    const btn = host.shadowRoot.querySelector(
-                      '#didomi-notice-agree-button, .didomi-button-highlight, ' +
-                      'button[aria-label*="Accept"], button[aria-label*="Agree"], ' +
-                      'button.didomi-components-button--color-green'
-                    );
-                    if (btn) { btn.click(); return true; }
-                  }
-                  return false;
-                }).catch(() => false);
-
-                if (shadowClicked) {
-                  console.log('✅ Clicked Didomi accept via Shadow DOM');
-                } else {
-                  // Step 3: Try Playwright locator (works for flat DOM or when Didomi is not shadow-rooted)
-                  const agreeBtn = page.locator('#didomi-notice-agree-button');
-                  const btnVisible = await agreeBtn.isVisible({ timeout: 3000 }).catch(() => false);
-                  if (btnVisible) {
-                    await agreeBtn.click({ timeout: 5000 }).catch(() => {});
-                    console.log('✅ Clicked Didomi accept via Playwright locator');
+                // Wait for Didomi modal to appear (with timeout)
+                const didomiModal = page.locator('#didomi-host');
+                await didomiModal.waitFor({ state: 'attached', timeout: 5000 }).catch(() => {});
+                const modalVisible = await didomiModal.isVisible().catch(() => false);
+                
+                if (modalVisible) {
+                  console.log("✅ Didomi consent modal detected - handling cookie consent...");
+                  
+                  // Try to click Accept/Close button
+                  const acceptButton = page.locator('#didomi-notice-agree-button');
+                  const acceptExists = await acceptButton.isVisible({ timeout: 3000 }).catch(() => false);
+                  
+                  if (acceptExists) {
+                    console.log('Clicking "Accept All Cookies" or "Close" button...');
+                    await acceptButton.click();
+                    await page.waitForTimeout(1000);
+                    console.log('✅ Successfully clicked Accept/Close button');
                   } else {
-                    // Step 4: Try text-based button search across all frames
-                    for (const frame of page.frames()) {
-                      try {
-                        const acceptBtn = frame.locator('button').filter({ hasText: /accept all cookies/i }).first();
-                        const vis = await acceptBtn.isVisible({ timeout: 1000 }).catch(() => false);
-                        if (vis) {
-                          await acceptBtn.click({ timeout: 3000 }).catch(() => {});
-                          console.log('✅ Clicked Didomi accept via text search in frame');
-                          break;
-                        }
-                      } catch (_) {}
+                    // Fallback: Try "Do not Share/Sell" button if Accept not found
+                    const learnMoreButton = page.locator('#didomi-notice-learn-more-button');
+                    const learnMoreExists = await learnMoreButton.isVisible({ timeout: 2000 }).catch(() => false);
+                    
+                    if (learnMoreExists) {
+                      console.log('Clicking "Do not Share or Sell my Personal Information" button...');
+                      await learnMoreButton.click();
+                      await page.waitForTimeout(1000);
+                      console.log('✅ Successfully clicked "Do not Share or Sell" button');
+                    } else {
+                      console.log('⚠️ No clickable Didomi buttons found - modal may require manual intervention');
                     }
                   }
-                }
-
-                // Step 5: Wait for consent callback to propagate, then clean up overlay
-                await page.waitForTimeout(1500);
-
-                // Step 6: Now safe to hide/remove remaining Didomi overlay
-                await page.evaluate(() => {
-                  ['#didomi-host', '#didomi-popup', '#didomi-notice',
-                   '.didomi-popup-container', '.didomi-notice-banner'].forEach(sel => {
-                    document.querySelectorAll(sel).forEach(el => el.remove());
-                  });
-                  document.body.style.overflow = '';
-                  document.documentElement.style.overflow = '';
-                }).catch(() => {});
-
-                await page.addStyleTag({ content: `
-                  #didomi-host, #didomi-popup, #didomi-notice,
-                  .didomi-popup-container, .didomi-notice-banner,
-                  [id*="didomi"], [class*="didomi"] {
-                    display: none !important;
-                    pointer-events: none !important;
+                  
+                  // Verify modal is gone
+                  await page.waitForTimeout(500);
+                  const stillVisible = await didomiModal.isVisible().catch(() => false);
+                  if (!stillVisible) {
+                    console.log("✅ Didomi consent modal successfully dismissed");
+                  } else {
+                    console.log("⚠️ Modal may still be visible, proceeding anyway...");
                   }
-                  body { overflow: auto !important; }
-                ` }).catch(() => {});
-
-                console.log('✅ Didomi consent handled and overlay cleaned up');
+                } else {
+                  console.log("ℹ️ No Didomi consent modal detected (already dismissed or not present)");
+                }
               } catch (err) {
-                console.log(`Didomi handler note (non-fatal): ${err.message}`);
+                console.error("⚠️ Error handling Didomi consent:", err.message);
+                console.log("Attempting to proceed with login anyway...");
               }
 
               await safeClickWithPopupRecovery(
