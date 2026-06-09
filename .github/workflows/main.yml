@@ -1716,16 +1716,18 @@ jobs:
                   
                   // Multiple button selector patterns for different Didomi configs and generic privacy modals
                   const buttonSelectors = [
-                    // Standard Didomi buttons
-                    '#didomi-notice-agree-button',
-                    '#didomi-notice-continue-button',  
-                    '#didomi-notice-dismiss-button',
-                    // Generic accept buttons
-                    '[data-didomi="continue"]',
-                    '[data-didomi="agree"]',
-                    '[data-didomi="accept"]',
-                    // Text-based selectors for common privacy modal buttons
+                    // PRIORITIZE CLOSE BUTTONS (these tend to dismiss modals permanently)
                     'button:has-text("Close")',
+                    'input[value*="Close"]',
+                    '[aria-label*="close"]',
+                    '[aria-label*="Close"]',
+                    '[title*="close"]',
+                    '[title*="Close"]',
+                    '.privacy-close',
+                    '.modal-close',
+                    '.popup-close',
+                    
+                    // THEN try accept/agree buttons 
                     'button:has-text("Accept")',
                     'button:has-text("Continue")', 
                     'button:has-text("OK")',
@@ -1733,23 +1735,26 @@ jobs:
                     'button:has-text("Agree")',
                     'button:has-text("I Understand")',
                     'button:has-text("Dismiss")',
+                    
+                    // Standard Didomi buttons (lower priority since they might not save consent properly)
+                    '#didomi-notice-agree-button',
+                    '#didomi-notice-continue-button',  
+                    '#didomi-notice-dismiss-button',
+                    
+                    // Generic accept buttons
+                    '[data-didomi="continue"]',
+                    '[data-didomi="agree"]',
+                    '[data-didomi="accept"]',
+                    
                     // Specific to privacy modals like the one in screenshot
                     'button:has-text("Do not Share or Sell my Personal Information")',
-                    'input[value*="Close"]',
                     'input[value*="Accept"]',
                     'input[value*="Continue"]',
+                    
                     // Class-based selectors
                     '.didomi-continue-without-agreeing',
                     '.didomi-notice-continue',
-                    '.consent-accept-all',
-                    '.privacy-close',
-                    '.modal-close',
-                    '.popup-close',
-                    // Generic close buttons
-                    '[aria-label*="close"]',
-                    '[aria-label*="Close"]',
-                    '[title*="close"]',
-                    '[title*="Close"]'
+                    '.consent-accept-all'
                   ];
                   
                   let clicked = false;
@@ -1947,8 +1952,16 @@ jobs:
                   console.log("Navigating to Zedge upload portal");
                   await page.goto("https://upload.zedge.net", { waitUntil: "domcontentloaded" });
                   await page.waitForLoadState("networkidle");
+                  
+                  // Handle any consent popups that appear after navigation
+                  console.log("🍪 Handling popups after portal navigation...");
+                  await handleDidomiConsent();
 
                   // Click Profiles tab
+                  // Handle any popups that might appear when navigating to Profiles
+                  console.log("🍪 Checking for popups before clicking Profiles...");
+                  await handleDidomiConsent();
+                  
                   await safeClick(
                     page.locator('a:has-text("Profiles")').first(),
                     "Profiles"
