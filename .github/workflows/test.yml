@@ -1,0 +1,118 @@
+name: Test Telegram Bot Notifications
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test-notifications:
+    runs-on: windows-2025
+
+    steps:
+      - name: Create test.js script
+        shell: pwsh
+        run: |
+          @'
+          const fs = require("fs");
+          const path = require("path");
+
+          const token = "8899617686:AAHHHzdNpaMTkzmkw_SSHtZGbUeEcUQjesw";
+          const chatId = "680349125";
+
+          async function sendTelegramNotification(message) {
+            try {
+              const url = `https://api.telegram.org/bot${token}/sendMessage`;
+              const res = await fetch(url, {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json"
+                },
+                body: JSON.stringify({
+                  chat_id: chatId,
+                  text: message
+                })
+              });
+              if (!res.ok) {
+                const errText = await res.text().catch(() => "");
+                console.log(`Telegram API response failed: HTTP ${res.status} - ${errText}`);
+              } else {
+                console.log("Telegram notification successfully sent.");
+              }
+            } catch (err) {
+              console.log(`Error sending Telegram notification: ${err.message}`);
+            }
+          }
+
+          async function sendTelegramAttachment(filePath, type = "image") {
+            try {
+              if (!fs.existsSync(filePath)) {
+                console.log(`Telegram attachment file not found: ${filePath}`);
+                return;
+              }
+              const fileBuffer = fs.readFileSync(filePath);
+              const blob = new Blob([fileBuffer]);
+              const formData = new FormData();
+              formData.append("chat_id", chatId);
+
+              let endpoint = "sendPhoto";
+              if (type === "video") {
+                endpoint = "sendVideo";
+                formData.append("video", blob, path.basename(filePath));
+              } else {
+                formData.append("photo", blob, path.basename(filePath));
+              }
+
+              const url = `https://api.telegram.org/bot${token}/${endpoint}`;
+              const res = await fetch(url, {
+                method: "POST",
+                body: formData
+              });
+              if (!res.ok) {
+                const errText = await res.text().catch(() => "");
+                console.log(`Telegram attachment (${type}) send failed: HTTP ${res.status} - ${errText}`);
+              } else {
+                console.log(`Telegram attachment (${type}) successfully sent.`);
+              }
+            } catch (err) {
+              console.log(`Error sending Telegram attachment (${type}): ${err.message}`);
+            }
+          }
+
+          (async () => {
+            try {
+              // 1. Generate a valid 1x1 transparent PNG file
+              console.log("Generating valid test PNG image...");
+              const pngBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
+              fs.writeFileSync("test.png", Buffer.from(pngBase64, "base64"));
+              console.log("test.png created successfully.");
+
+              // 2. Download a tiny valid MP4 video (around 300KB)
+              console.log("Downloading small sample video...");
+              const videoUrl = "https://www.w3schools.com/html/movie.mp4";
+              const videoRes = await fetch(videoUrl);
+              if (!videoRes.ok) {
+                throw new Error(`Failed to download sample video: HTTP ${videoRes.status}`);
+              }
+              const videoBuffer = await videoRes.arrayBuffer();
+              fs.writeFileSync("test.mp4", Buffer.from(videoBuffer));
+              console.log("test.mp4 downloaded successfully.");
+
+              // 3. Send test messages
+              console.log("Sending text notification...");
+              await sendTelegramNotification("👋 Hello! This is a test notification from your Zedge Automation Telegram Integration.");
+
+              console.log("Sending test image attachment...");
+              await sendTelegramAttachment("test.png", "image");
+
+              console.log("Sending test video attachment...");
+              await sendTelegramAttachment("test.mp4", "video");
+
+              console.log("All tests completed.");
+            } catch (err) {
+              console.error("Test runner encountered an error:", err.message);
+            }
+          })();
+          '@ | Set-Content test.js
+
+      - name: Run Telegram tests
+        shell: pwsh
+        run: node test.js
